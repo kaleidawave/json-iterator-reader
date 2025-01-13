@@ -103,7 +103,7 @@ jobs:
             #   find fuzz/artifacts -type f -print -exec xxd {} \; -exec cargo fuzz fmt -s none module_roundtrip_structured {} \;; false; 
             # fi
           fi
-        working-directory: checker/fuzz
+        working-directory: fuzz
 
   publish-ability:
     runs-on: ubuntu-latest
