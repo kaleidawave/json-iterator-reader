@@ -1,0 +1,17 @@
+[package]
+name = "simple-json-parser-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[dependencies.simple-json-parser]
+path = ".."
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "source_roundtrip_naive"
+path = "fuzz_targets/source_roundtrip_naive.rs"
+test = false
+doc = false
