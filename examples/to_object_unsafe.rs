@@ -63,8 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let value = match value {
             RootJSONValue::String(s) => Value::String(s.to_string()),
             RootJSONValue::Number(n) => Value::Number(n.to_string()),
-            RootJSONValue::True => Value::Boolean(true),
-            RootJSONValue::False => Value::Boolean(false),
+            RootJSONValue::Boolean(v) => Value::Boolean(v),
             RootJSONValue::Null => Value::Null,
         };
         unsafe {

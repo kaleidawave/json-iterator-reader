@@ -1,7 +1,7 @@
 use simple_json_parser::{parse, JSONKey, RootJSONValue};
 
 #[test]
-fn main() {
+fn parse_package_json() {
     let content = r#"{
         "name": "ezno",
         "version": "0.0.14",
@@ -91,7 +91,7 @@ fn main() {
         } else if let &[JSONKey::Slice("keywords"), JSONKey::Index(3)] = keys {
             assert_eq!(value, RootJSONValue::String("compiler"));
         } else if let &[JSONKey::Slice("build"), JSONKey::Slice("failOnWarn")] = keys {
-            assert_eq!(value, RootJSONValue::False);
+            assert_eq!(value, RootJSONValue::Boolean(false));
         }
     });
 

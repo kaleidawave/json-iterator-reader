@@ -8,8 +8,7 @@ pub enum JSONKey<'a> {
 pub enum RootJSONValue<'a> {
     String(&'a str),
     Number(&'a str),
-    True,
-    False,
+    Boolean(bool),
     Null,
 }
 
@@ -20,6 +19,7 @@ pub enum JSONParseErrorReason {
     /// Doubles as both closing and ending
     ExpectedBracket,
     ExpectedTrueFalseNull,
+    ExpectedKey,
     ExpectedValue,
     ExpectedEndOfMultilineComment,
     /// Both for string values and keys
@@ -43,18 +43,24 @@ impl std::fmt::Display for JSONParseError {
     }
 }
 
-/// If you want to return early (not parse the whole input) use [`parse_with_exit_signal`]
+/// If you want to return early (break on an exception in the callback) or
+/// more configuration use [`parse_with_exit_signal`]
 ///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
 pub fn parse<'a>(
     on: &'a str,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>),
-) -> Result<(), JSONParseError> {
-    parse_with_exit_signal(on, |k, v| {
-        cb(k, v);
-        false
-    })
+) -> Result<usize, JSONParseError> {
+    parse_with_exit_signal(
+        on,
+        |k, v| {
+            cb(k, v);
+            false
+        },
+        false,
+        true,
+    )
 }
 
 enum State {
@@ -91,6 +97,7 @@ fn end_of_value(
     chr: char,
     state: &mut State,
     key_chain: &mut Vec<JSONKey<'_>>,
+    allow_comments: bool,
 ) -> Result<(), JSONParseError> {
     if chr == ',' {
         if let Some(JSONKey::Index(i)) = key_chain.last_mut() {
@@ -101,10 +108,12 @@ fn end_of_value(
             *state = State::InObject;
         }
     } else if let ('}', Some(JSONKey::Slice(..))) = (chr, key_chain.last()) {
+        // TODO errors here if index
         key_chain.pop();
     } else if let (']', Some(JSONKey::Index(..))) = (chr, key_chain.last()) {
+        // TODO errors here if slice etc
         key_chain.pop();
-    } else if let c @ ('/' | '#') = chr {
+    } else if let (true, c @ ('/' | '#')) = (allow_comments, chr) {
         key_chain.pop();
         *state = State::Comment {
             last_was_asterisk: false,
@@ -121,13 +130,18 @@ fn end_of_value(
     Ok(())
 }
 
+/// Returns the number of bytes parsed.
+/// `exit_on_first_value` returns once the first object has been parsed.
+///
 /// # Errors
 /// Returns an error if it tries to parse invalid JSON input
 #[allow(clippy::too_many_lines)]
 pub fn parse_with_exit_signal<'a>(
     on: &'a str,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> bool,
-) -> Result<(), JSONParseError> {
+    exit_on_first_value: bool,
+    allow_comments: bool,
+) -> Result<usize, JSONParseError> {
     let chars = on.char_indices();
 
     let mut key_chain = Vec::new();
@@ -154,7 +168,7 @@ pub fn parse_with_exit_signal<'a>(
                     state = State::EndOfValue;
                     let res = cb(&key_chain, RootJSONValue::String(&on[start..idx]));
                     if res {
-                        return Ok(());
+                        return Ok(idx + chr.len_utf8());
                     }
                 } else {
                     *escaped = chr == '\\';
@@ -171,7 +185,11 @@ pub fn parse_with_exit_signal<'a>(
                 }
             }
             State::EndOfValue => {
-                end_of_value(idx, chr, &mut state, &mut key_chain)?;
+                end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
+
+                if exit_on_first_value && key_chain.is_empty() && chr != ',' {
+                    return Ok(idx + chr.len_utf8());
+                }
             }
             State::Comment {
                 ref mut last_was_asterisk,
@@ -210,7 +228,7 @@ pub fn parse_with_exit_signal<'a>(
                         start: idx + '"'.len_utf8(),
                         escaped: false,
                     },
-                    c @ ('/' | '#') => State::Comment {
+                    c @ ('/' | '#') if allow_comments => State::Comment {
                         last_was_asterisk: false,
                         start: idx,
                         multiline: false,
@@ -239,6 +257,18 @@ pub fn parse_with_exit_signal<'a>(
                     } else {
                         state = State::InObject;
                     }
+                } else if let (true, c @ ('/' | '#')) = (allow_comments, chr) {
+                    state = State::Comment {
+                        last_was_asterisk: false,
+                        start: idx,
+                        multiline: false,
+                        hash: c == '#',
+                    };
+                } else if !chr.is_whitespace() {
+                    return Err(JSONParseError {
+                        at: idx,
+                        reason: JSONParseErrorReason::ExpectedKey,
+                    });
                 }
             }
             State::NumberValue { start } => {
@@ -246,10 +276,10 @@ pub fn parse_with_exit_signal<'a>(
                 if chr.is_whitespace() || matches!(chr, '}' | ',' | ']') {
                     let res = cb(&key_chain, RootJSONValue::Number(&on[start..idx]));
                     if res {
-                        return Ok(());
+                        return Ok(idx);
                     }
                     state = State::EndOfValue;
-                    end_of_value(idx, chr, &mut state, &mut key_chain)?;
+                    end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
                 }
             }
             State::TrueFalseNull { start } => {
@@ -259,16 +289,16 @@ pub fn parse_with_exit_signal<'a>(
                 } else if diff == 4 {
                     match &on[start..=idx] {
                         "true" => {
-                            let res = cb(&key_chain, RootJSONValue::True);
+                            let res = cb(&key_chain, RootJSONValue::Boolean(true));
                             if res {
-                                return Ok(());
+                                return Ok(idx + chr.len_utf8());
                             }
                             state = State::EndOfValue;
                         }
                         "null" => {
                             let res = cb(&key_chain, RootJSONValue::Null);
                             if res {
-                                return Ok(());
+                                return Ok(idx + chr.len_utf8());
                             }
                             state = State::EndOfValue;
                         }
@@ -281,7 +311,10 @@ pub fn parse_with_exit_signal<'a>(
                         }
                     }
                 } else if let "false" = &on[start..=idx] {
-                    cb(&key_chain, RootJSONValue::False);
+                    let res = cb(&key_chain, RootJSONValue::Boolean(false));
+                    if res {
+                        return Ok(idx + chr.len_utf8());
+                    }
                     state = State::EndOfValue;
                 } else {
                     return Err(JSONParseError {
@@ -294,46 +327,51 @@ pub fn parse_with_exit_signal<'a>(
     }
 
     match state {
-        State::InKey { .. } | State::StringValue { .. } => Err(JSONParseError {
-            at: on.len(),
-            reason: JSONParseErrorReason::ExpectedQuote,
-        }),
-        State::Colon => Err(JSONParseError {
-            at: on.len(),
-            reason: JSONParseErrorReason::ExpectedColon,
-        }),
+        State::InKey { .. } | State::StringValue { .. } => {
+            return Err(JSONParseError {
+                at: on.len(),
+                reason: JSONParseErrorReason::ExpectedQuote,
+            })
+        }
+        State::Colon => {
+            return Err(JSONParseError {
+                at: on.len(),
+                reason: JSONParseErrorReason::ExpectedColon,
+            });
+        }
         State::Comment { multiline, .. } => {
             if multiline {
-                Ok(())
-            } else {
-                Err(JSONParseError {
+                return Err(JSONParseError {
                     at: on.len(),
                     reason: JSONParseErrorReason::ExpectedEndOfMultilineComment,
-                })
+                });
             }
         }
         State::EndOfValue | State::ExpectingValue => {
-            if key_chain.is_empty() {
-                Ok(())
-            } else {
-                Err(JSONParseError {
+            if !key_chain.is_empty() {
+                return Err(JSONParseError {
                     at: on.len(),
                     reason: JSONParseErrorReason::ExpectedBracket,
-                })
+                });
             }
         }
-        State::InObject => Err(JSONParseError {
-            at: on.len(),
-            reason: JSONParseErrorReason::ExpectedBracket,
-        }),
+        State::InObject => {
+            return Err(JSONParseError {
+                at: on.len(),
+                reason: JSONParseErrorReason::ExpectedBracket,
+            });
+        }
         State::NumberValue { start } => {
             // TODO actual number handing
             let _result = cb(&key_chain, RootJSONValue::Number(&on[start..]));
-            Ok(())
         }
-        State::TrueFalseNull { start: _ } => Err(JSONParseError {
-            at: on.len(),
-            reason: JSONParseErrorReason::ExpectedTrueFalseNull,
-        }),
+        State::TrueFalseNull { start: _ } => {
+            return Err(JSONParseError {
+                at: on.len(),
+                reason: JSONParseErrorReason::ExpectedTrueFalseNull,
+            })
+        }
     }
+
+    Ok(on.len())
 }
