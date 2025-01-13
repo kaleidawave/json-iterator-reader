@@ -64,6 +64,47 @@ jobs:
     - name: Lint code with clippy
       run: cargo clippy
 
+  fuzzing:
+    if: ${{ github.ref == 'main' || !github.event.pull_request.draft || contains(github.event.pull_request.labels.*.name, 'fuzz-me') }}
+    needs: validity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    strategy:
+      matrix:
+        fuzz-target: [source_roundtrip_naive]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.CACHE_PATHS }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install latest nightly and set it as default
+        run: |
+          rustup install nightly
+          rustup default nightly
+
+      - name: Install cargo-fuzz
+        run: cargo install --git https://github.com/rust-fuzz/cargo-fuzz.git
+
+      - name: Run fuzzing
+        env:
+          SHORT_CIRCUIT: true
+        run: |
+          if ${{ env.SHORT_CIRCUIT }}; then
+            cargo fuzz run -s none ${{ matrix.fuzz-target }} -- -timeout=10 -use_value_profile=1 -max_total_time=120
+          else
+            cargo fuzz run -s none ${{ matrix.fuzz-target }} -- -timeout=10 -use_value_profile=1 -max_total_time=300 -fork=1 -ignore_crashes=1
+            
+            # if test -d fuzz/artifacts; then 
+            #   find fuzz/artifacts -type f -print -exec xxd {} \; -exec cargo fuzz fmt -s none module_roundtrip_structured {} \;; false; 
+            # fi
+          fi
+        working-directory: fuzz
+
   publish-ability:
     runs-on: ubuntu-latest
     if: false
