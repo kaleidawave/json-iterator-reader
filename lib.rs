@@ -287,7 +287,7 @@ pub fn parse_with_exit_signal<'a>(
                 if diff < 4 {
                     // ...
                 } else if diff == 4 {
-                    match &on[start..=idx] {
+                    match &on[start..(idx+chr.len_utf8())] {
                         "true" => {
                             let res = cb(&key_chain, RootJSONValue::Boolean(true));
                             if res {
@@ -310,7 +310,7 @@ pub fn parse_with_exit_signal<'a>(
                             })
                         }
                     }
-                } else if let "false" = &on[start..=idx] {
+                } else if let "false" = &on[start..(idx+chr.len_utf8())] {
                     let res = cb(&key_chain, RootJSONValue::Boolean(false));
                     if res {
                         return Ok(idx + chr.len_utf8());
