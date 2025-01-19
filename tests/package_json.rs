@@ -1,4 +1,6 @@
-use simple_json_parser::{parse, JSONKey, RootJSONValue};
+use simple_json_parser::{
+    key_chain_equals, parse_with_exit_signal, JSONKey, ParseOptions, RootJSONValue,
+};
 
 #[test]
 fn parse_package_json() {
@@ -83,17 +85,34 @@ fn parse_package_json() {
         }
     }"#;
 
-    let result = parse(content, |keys, value| {
-        if let &[JSONKey::Slice("name")] = keys {
-            assert_eq!(value, RootJSONValue::String("ezno"));
-        } else if let &[JSONKey::Slice("author"), JSONKey::Slice("name")] = keys {
-            assert_eq!(value, RootJSONValue::String("Ben"));
-        } else if let &[JSONKey::Slice("keywords"), JSONKey::Index(3)] = keys {
-            assert_eq!(value, RootJSONValue::String("compiler"));
-        } else if let &[JSONKey::Slice("build"), JSONKey::Slice("failOnWarn")] = keys {
-            assert_eq!(value, RootJSONValue::Boolean(false));
-        }
-    });
+    let mut found = 0;
+    let result = parse_with_exit_signal(
+        content,
+        |keys, value| {
+            if let &[JSONKey::Slice("name")] = keys {
+                found += 1;
+                assert_eq!(value, RootJSONValue::String("ezno"));
+            } else if let &[JSONKey::Slice("author"), JSONKey::Slice("name")] = keys {
+                found += 1;
+                assert_eq!(value, RootJSONValue::String("Ben"));
+            } else if let &[JSONKey::Slice("keywords"), JSONKey::Index(3)] = keys {
+                found += 1;
+                assert_eq!(value, RootJSONValue::String("compiler"));
+            } else if key_chain_equals(
+                keys,
+                &[JSONKey::Slice("build"), JSONKey::Slice("failOnWarn")],
+            ) {
+                found += 1;
+                assert_eq!(value, RootJSONValue::Boolean(false));
+            }
+            false
+        },
+        &ParseOptions {
+            allow_comments: true,
+            ..Default::default()
+        },
+    );
 
     assert!(result.is_ok());
+    assert_eq!(found, 4);
 }

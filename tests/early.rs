@@ -1,4 +1,4 @@
-use simple_json_parser::{parse_with_exit_signal, JSONKey, RootJSONValue};
+use simple_json_parser::{parse_with_exit_signal, JSONKey, ParseOptions, RootJSONValue};
 
 #[test]
 fn at_end_of_value() {
@@ -23,8 +23,10 @@ fn at_end_of_value() {
             }
             false
         },
-        true,
-        true,
+        &ParseOptions {
+            exit_on_first_value: true,
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -49,8 +51,7 @@ fn at_found_value() {
                 false
             }
         },
-        true,
-        true,
+        &ParseOptions::default(),
     )
     .unwrap();
 

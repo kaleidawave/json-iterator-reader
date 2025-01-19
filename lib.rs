@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JSONKey<'a> {
     Slice(&'a str),
@@ -58,8 +60,7 @@ pub fn parse<'a>(
             cb(k, v);
             false
         },
-        false,
-        true,
+        &ParseOptions::default(),
     )
 }
 
@@ -130,6 +131,12 @@ fn end_of_value(
     Ok(())
 }
 
+#[derive(Default)]
+pub struct ParseOptions {
+    pub exit_on_first_value: bool,
+    pub allow_comments: bool,
+}
+
 /// Returns the number of bytes parsed.
 /// `exit_on_first_value` returns once the first object has been parsed.
 ///
@@ -139,8 +146,7 @@ fn end_of_value(
 pub fn parse_with_exit_signal<'a>(
     on: &'a str,
     mut cb: impl for<'b> FnMut(&'b [JSONKey<'a>], RootJSONValue<'a>) -> bool,
-    exit_on_first_value: bool,
-    allow_comments: bool,
+    options: &ParseOptions,
 ) -> Result<usize, JSONParseError> {
     let chars = on.char_indices();
 
@@ -185,9 +191,9 @@ pub fn parse_with_exit_signal<'a>(
                 }
             }
             State::EndOfValue => {
-                end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
+                end_of_value(idx, chr, &mut state, &mut key_chain, options.allow_comments)?;
 
-                if exit_on_first_value && key_chain.is_empty() && chr != ',' {
+                if options.exit_on_first_value && key_chain.is_empty() && chr != ',' {
                     return Ok(idx + chr.len_utf8());
                 }
             }
@@ -228,7 +234,7 @@ pub fn parse_with_exit_signal<'a>(
                         start: idx + '"'.len_utf8(),
                         escaped: false,
                     },
-                    c @ ('/' | '#') if allow_comments => State::Comment {
+                    c @ ('/' | '#') if options.allow_comments => State::Comment {
                         last_was_asterisk: false,
                         start: idx,
                         multiline: false,
@@ -257,7 +263,7 @@ pub fn parse_with_exit_signal<'a>(
                     } else {
                         state = State::InObject;
                     }
-                } else if let (true, c @ ('/' | '#')) = (allow_comments, chr) {
+                } else if let (true, c @ ('/' | '#')) = (options.allow_comments, chr) {
                     state = State::Comment {
                         last_was_asterisk: false,
                         start: idx,
@@ -279,7 +285,7 @@ pub fn parse_with_exit_signal<'a>(
                         return Ok(idx);
                     }
                     state = State::EndOfValue;
-                    end_of_value(idx, chr, &mut state, &mut key_chain, allow_comments)?;
+                    end_of_value(idx, chr, &mut state, &mut key_chain, options.allow_comments)?;
                 }
             }
             State::TrueFalseNull { start } => {
@@ -287,7 +293,7 @@ pub fn parse_with_exit_signal<'a>(
                 if diff < 4 {
                     // ...
                 } else if diff == 4 {
-                    match &on[start..(idx+chr.len_utf8())] {
+                    match &on[start..(idx + chr.len_utf8())] {
                         "true" => {
                             let res = cb(&key_chain, RootJSONValue::Boolean(true));
                             if res {
@@ -310,7 +316,7 @@ pub fn parse_with_exit_signal<'a>(
                             })
                         }
                     }
-                } else if let "false" = &on[start..(idx+chr.len_utf8())] {
+                } else if let "false" = &on[start..(idx + chr.len_utf8())] {
                     let res = cb(&key_chain, RootJSONValue::Boolean(false));
                     if res {
                         return Ok(idx + chr.len_utf8());
@@ -374,4 +380,81 @@ pub fn parse_with_exit_signal<'a>(
     }
 
     Ok(on.len())
+}
+
+// Equates key chains while accounting for escapes
+#[must_use]
+pub fn key_chain_equals(keys: &[JSONKey<'_>], expected: &[JSONKey<'_>]) -> bool {
+    if keys.len() == expected.len() {
+        for (expected, key) in std::iter::zip(expected, keys) {
+            match (expected, key) {
+                (JSONKey::Slice(expected), JSONKey::Slice(key)) => {
+                    let mut key_chars = key.chars();
+                    for expected in expected.chars() {
+                        let next = key_chars.next();
+                        // Extract escapes
+                        let next = if next.is_some_and(|inner| inner == '\\') {
+                            key_chars.next()
+                        } else {
+                            next
+                        };
+                        if next.is_none_or(|key_chr| expected != key_chr) {
+                            return false;
+                        }
+                    }
+                }
+                (JSONKey::Index(expected), JSONKey::Index(key)) => {
+                    if expected != key {
+                        return false;
+                    }
+                }
+                (_, _) => return false,
+            }
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// Modified version of <https://github.com/parcel-bundler/parcel/blob/f86f5f27c3a6553e70bd35652f19e6ab8d8e4e4a/crates/dev-dep-resolver/src/lib.rs#L368-L380>
+#[must_use]
+pub fn unescape_string_content(on: &str) -> Cow<'_, str> {
+    let mut result = Cow::Borrowed("");
+    let mut start = 0;
+    for (index, _matched) in on.match_indices('\\') {
+        result += &on[start..index];
+        start = index + 1;
+    }
+    result += &on[start..];
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_chain_equality() {
+        assert!(key_chain_equals(
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\\\"")],
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\"")]
+        ));
+        assert!(!key_chain_equals(
+            &[JSONKey::Slice("k1"), JSONKey::Slice("b\\\"")],
+            &[JSONKey::Slice("k1"), JSONKey::Slice("q\"")]
+        ));
+    }
+
+    #[test]
+    fn unescaping() {
+        assert!(matches!(
+            unescape_string_content("No quotes here"),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            unescape_string_content("Something with \\\"quotes\\\""),
+            "Something with \"quotes\""
+        );
+    }
 }
